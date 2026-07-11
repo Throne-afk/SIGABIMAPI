@@ -745,7 +745,10 @@ export const createInventarioRow = async (
     INVENTARIO_CACHE.delete(id);
 
     // Actualizar total_registros en metadatos (opcional pero recomendado)
-    await supabase.rpc('increment_inventario_total', { row_id: id }).catch(() => {});
+    const { error: rpcError } = await supabase.rpc('increment_inventario_total', { row_id: id });
+    if (rpcError) {
+      console.warn('No se pudo incrementar el total:', rpcError.message);
+    }
 
     res.status(201).json({ success: true, data: inserted });
   } catch (error) {
