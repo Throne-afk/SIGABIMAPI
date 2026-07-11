@@ -5,7 +5,10 @@ import {
   getInventarios,
   getInventarioById,
   getInventarioRows,
+  getColumnValues,
   deleteInventario,
+  createInventarioRow,
+  updateInventarioRow,
 } from '../controllers/inventario.controller';
 
 export const inventarioRouter = Router();
@@ -24,6 +27,24 @@ inventarioRouter.get('/', getInventarios);
 inventarioRouter.get('/:id/rows', getInventarioRows);
 
 /**
+ * POST /api/inventarios/:id/rows
+ * Crea un nuevo registro en el inventario.
+ */
+inventarioRouter.post('/:id/rows', createInventarioRow);
+
+/**
+ * PUT /api/inventarios/:id/rows/:rowId
+ * Actualiza un registro del inventario.
+ */
+inventarioRouter.put('/:id/rows/:rowId', updateInventarioRow);
+
+/**
+ * GET /api/inventarios/:id/column-values?col=NombreColumna&limit=200
+ * Devuelve los valores únicos de una columna específica (para dropdowns de filtro).
+ */
+inventarioRouter.get('/:id/column-values', getColumnValues);
+
+/**
  * GET /api/inventarios/:id
  * Metadatos de un inventario específico.
  */
@@ -32,10 +53,6 @@ inventarioRouter.get('/:id', getInventarioById);
 /**
  * POST /api/inventarios/upload
  * Recibe un archivo Excel y lo parsea e inserta en Supabase.
- * Estructura esperada del Excel:
- *   - Cols 1-2 : Sección y Categoría (agrupación)
- *   - Fila 3   : Cabeceras (keys)
- *   - Fila 4+  : Registros de datos
  */
 inventarioRouter.post(
   '/upload',
