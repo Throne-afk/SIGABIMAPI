@@ -8,10 +8,26 @@ import { v4 as uuidv4 } from 'uuid';
 const USERS_FILE = path.join(process.cwd(), 'src', 'data', 'users.json');
 const JWT_SECRET = process.env.JWT_SECRET || 'sigabim-super-secret-key-123';
 
-// Helper: Leer archivo JSON
 const readUsers = (): any[] => {
   if (!fs.existsSync(USERS_FILE)) {
-    fs.writeFileSync(USERS_FILE, JSON.stringify([]));
+    const defaultAdminPasswordHash = '$2b$10$AVShbdSjHU8DLriu3eEzK.QBoabYfLORhmXbtfttum4jXb1bcQcu2'; // hash de 'admin123'
+    const defaultUsers = [
+      {
+        id: 'f84b78e5-6a47-4453-b2e0-a853baa05f2b',
+        nombre: 'Admin Master',
+        email: 'admin@sigabim.com',
+        telefono: '0000',
+        status: 'aprobado',
+        rol: 'admin',
+        created_at: new Date().toISOString(),
+        password: defaultAdminPasswordHash
+      }
+    ];
+    const dir = path.dirname(USERS_FILE);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(USERS_FILE, JSON.stringify(defaultUsers, null, 2));
   }
   const data = fs.readFileSync(USERS_FILE, 'utf8');
   return data ? JSON.parse(data) : [];
