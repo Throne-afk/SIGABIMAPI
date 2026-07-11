@@ -23,7 +23,7 @@ if (process.env.NODE_ENV !== 'production') {
 
 // ─── Middlewares ───────────────────────────────────────────────────────────────
 app.use(cors({
-  origin: CORS_ORIGIN,
+  origin: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
