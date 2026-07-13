@@ -9,6 +9,7 @@ import {
   deleteInventario,
   createInventarioRow,
   updateInventarioRow,
+  getInventarioStats,
 } from '../controllers/inventario.controller';
 
 export const inventarioRouter = Router();
@@ -43,6 +44,12 @@ inventarioRouter.put('/:id/rows/:rowId', updateInventarioRow);
  * Devuelve los valores únicos de una columna específica (para dropdowns de filtro).
  */
 inventarioRouter.get('/:id/column-values', getColumnValues);
+
+/**
+ * GET /api/inventarios/:id/stats
+ * Devuelve estadísticas para el dashboard.
+ */
+inventarioRouter.get('/:id/stats', getInventarioStats);
 
 /**
  * GET /api/inventarios/:id
