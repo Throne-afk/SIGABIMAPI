@@ -44,3 +44,34 @@ CREATE POLICY "service_role_all" ON inventarios
 
 CREATE POLICY "service_role_all" ON inventario_registros
   FOR ALL USING (true);
+
+-- ─── Tabla de Bitácora (Auditoría) ────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS bitacora (
+  id             BIGSERIAL   PRIMARY KEY,
+  usuario_id     TEXT        NOT NULL,
+  usuario_nombre TEXT        NOT NULL,
+  accion         TEXT        NOT NULL, -- Ej: 'CREAR', 'EDITAR', 'ELIMINAR'
+  entidad        TEXT        NOT NULL, -- Ej: 'Inventario', 'Bien Mueble'
+  entidad_id     TEXT,                 -- ID del registro afectado
+  detalles       JSONB,                -- JSON con los cambios o la info
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ─── Tabla de Notificaciones ──────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS notificaciones (
+  id             BIGSERIAL   PRIMARY KEY,
+  bitacora_id    BIGINT      REFERENCES bitacora(id) ON DELETE CASCADE,
+  mensaje        TEXT        NOT NULL,
+  leida          BOOLEAN     NOT NULL DEFAULT FALSE,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Índices
+CREATE INDEX IF NOT EXISTS idx_bitacora_created_at ON bitacora (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notificaciones_leida ON notificaciones (leida, created_at DESC);
+
+-- Permisos
+ALTER TABLE bitacora ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notificaciones ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "service_role_all" ON bitacora FOR ALL USING (true);
+CREATE POLICY "service_role_all" ON notificaciones FOR ALL USING (true);

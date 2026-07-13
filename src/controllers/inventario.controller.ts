@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import * as XLSX from 'xlsx';
 import path from 'path';
 import { supabase } from '../lib/supabase';
+import { logAuditoria } from './bitacora.controller';
 
 // ─── Tipos ─────────────────────────────────────────────────────────────────────
 
@@ -623,62 +624,65 @@ export const getInventarioStats = async (
     // Obtenemos todos los registros desde caché para contar rápido
     const allRows = await getInventarioRowsFromCache(id);
     
-    let totalGeneral = allRows.length;
-    let equipoPrincipal = 0;
+    let total_bienes = 0;
+    let equipo_principal = 0;
     let componentes = 0;
-    let noInventariables = 0;
-    let activos = 0;
+    let no_inventariables = 0;
+    let faltantes = 0;
     
-    let registradosGrp = 0;
+    let registrados_grp = 0;
+    let regularizacion = 0;
     
     for (const r of allRows) {
       const datos = r.datos || {};
       
+      // Extraer la cantidad (por defecto 1 si no está o no es un número válido)
+      const rawQty = datos['Cantidad'] || datos['CANTIDAD'] || datos['cantidad'];
+      let qty = parseInt(String(rawQty), 10);
+      if (isNaN(qty) || qty < 1) {
+        qty = 1;
+      }
+
+      total_bienes += qty;
+      
       // Tipo de Registro
-      const tipo = String(datos['Tipo de Registro'] || '').toUpperCase().trim();
-      if (tipo === 'EQUIPO PRINCIPAL') equipoPrincipal++;
-      else if (tipo === 'COMPONENTE' || tipo.includes('COMPONENTE')) componentes++;
-      else if (tipo === 'NO INVENTARIABLE') noInventariables++;
-      else if (tipo === 'FALTANTE' || tipo === 'ACTIVO') activos++;
+      // (Valores esperados: "Equipo Principal", "Componente", "No Inventariable")
+      const tipo = String(datos['Tipo de Registro'] || '').trim();
+      if (tipo.toLowerCase() === 'equipo principal') equipo_principal += qty;
+      else if (tipo.toLowerCase() === 'componente') componentes += qty;
+      else if (tipo.toLowerCase() === 'no inventariable') no_inventariables += qty;
+      
+      // Estatus Patrimonial
+      // (Valor a buscar: "Faltante")
+      const estatusPatrimonial = String(datos['Estatus Patrimonial (Estatus)'] || datos['Estatus Patrimonial'] || '').trim();
+      if (estatusPatrimonial.toLowerCase() === 'faltante') faltantes += qty;
       
       // Estatus GRP
-      const estatusGrp = String(datos['Estatus GRP'] || datos['ESTATUS GRP'] || '').toUpperCase().trim();
-      if (estatusGrp === 'REGISTRADO' || estatusGrp.includes('ALTA') || estatusGrp === 'SÍ' || estatusGrp === 'SI') {
-        registradosGrp++;
-      }
+      // (Valores esperados: "Registrados en el GRP", "En Proceso de Regularización")
+      const estatusGrp = String(datos['Estatus GRP'] || datos['ESTATUS GRP'] || '').trim();
+      if (estatusGrp.toLowerCase() === 'registrados en el grp') registrados_grp += qty;
     }
     
-    // Si no encontramos nada con Estatus GRP explícito, simulamos basándonos en la imagen para el demo si está vacío
-    // Pero lo ideal es dejarlo real.
-    // "En Proceso" = lo que resta (o se ajusta si faltan).
-    let enProceso = totalGeneral - registradosGrp;
+    // El proceso de regularización es la resta de equipo principal menos los registrados en GRP
+    regularizacion = equipo_principal - registrados_grp;
+    // Evitar números negativos por si registrados_grp supera equipo_principal por errores en datos
+    if (regularizacion < 0) regularizacion = 0;
     
-    // Si no hay 'Tipo de Registro', pero la imagen mostraba datos fijos como fallback, podemos forzar un fallback visual si los counts dan 0 y total es alto, para que no se vea feo.
-    if (equipoPrincipal === 0 && componentes === 0 && totalGeneral > 0) {
-      // Simulación basada en proporciones para la demo si la columna no existe exactamente
-      equipoPrincipal = Math.round(totalGeneral * 0.88);
-      componentes = Math.round(totalGeneral * 0.10);
-      noInventariables = Math.round(totalGeneral * 0.01);
-      activos = totalGeneral - equipoPrincipal - componentes - noInventariables;
-      registradosGrp = Math.round(totalGeneral * 0.25);
-      enProceso = totalGeneral - registradosGrp;
-    }
-
-    const avanceGrpPct = totalGeneral > 0 ? Math.round((registradosGrp / totalGeneral) * 100) : 0;
-    const faltaGrpPct = totalGeneral > 0 ? 100 - avanceGrpPct : 0;
+    const avance_grp = total_bienes > 0 ? Math.round((registrados_grp / total_bienes) * 100) : 0;
+    const falta_grp = total_bienes > 0 ? 100 - avance_grp : 0;
 
     res.status(200).json({
       success: true,
       data: {
-        totalGeneral,
-        equipoPrincipal,
-        componentes,
-        noInventariables,
-        activos,
-        registradosGrp,
-        enProceso,
-        avanceGrpPct,
-        faltaGrpPct
+        totalGeneral: total_bienes,
+        equipoPrincipal: equipo_principal,
+        componentes: componentes,
+        noInventariables: no_inventariables,
+        activos: faltantes, // Representa a "Faltante" en la UI
+        registradosGrp: registrados_grp,
+        enProceso: regularizacion,
+        avanceGrpPct: avance_grp,
+        faltaGrpPct: falta_grp
       }
     });
   } catch (error) {
@@ -706,6 +710,17 @@ export const deleteInventario = async (
     if (error) {
       res.status(404).json({ success: false, message: 'Inventario no encontrado.' });
       return;
+    }
+
+    if (req.user) {
+      await logAuditoria(
+        req.user.id,
+        req.user.nombre,
+        'ELIMINAR',
+        'Inventario Completo',
+        id,
+        { mensaje: `Se eliminó el inventario ${id}` }
+      );
     }
 
     res.status(200).json({ success: true, message: 'Inventario eliminado.' });
@@ -828,6 +843,20 @@ export const createInventarioRow = async (
       console.warn('No se pudo incrementar el total:', rpcError.message);
     }
 
+    if (req.user) {
+      await logAuditoria(
+        req.user.id,
+        req.user.nombre,
+        'CREAR',
+        'Bien Mueble',
+        inserted.id.toString(),
+        {
+          numero_oficial: numOficialFinal,
+          datos: inserted.datos
+        }
+      );
+    }
+
     res.status(201).json({ success: true, data: inserted });
   } catch (error) {
     next(error);
@@ -882,6 +911,20 @@ export const updateInventarioRow = async (
 
     // Limpiar caché
     INVENTARIO_CACHE.delete(id);
+
+    if (req.user) {
+      await logAuditoria(
+        req.user.id,
+        req.user.nombre,
+        'EDITAR',
+        'Bien Mueble',
+        updated.id.toString(),
+        {
+          numero_oficial: numOficialFinal,
+          datos_nuevos: updated.datos
+        }
+      );
+    }
 
     res.status(200).json({ success: true, data: updated });
   } catch (error) {

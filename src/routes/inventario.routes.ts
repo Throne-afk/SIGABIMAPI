@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { upload } from '../middleware/upload';
+import { requireAuth } from '../middleware/auth.middleware';
 import {
   uploadInventario,
   getInventarios,
@@ -13,6 +14,10 @@ import {
 } from '../controllers/inventario.controller';
 
 export const inventarioRouter = Router();
+
+// Aplicar middleware de autenticación a todas las rutas de inventario
+// (Esto poblará req.user si el frontend envía el token)
+inventarioRouter.use(requireAuth);
 
 /**
  * GET /api/inventarios
@@ -72,3 +77,4 @@ inventarioRouter.post(
  * Elimina un inventario y todos sus registros (CASCADE en Supabase).
  */
 inventarioRouter.delete('/:id', deleteInventario);
+
