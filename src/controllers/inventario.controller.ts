@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import * as XLSX from 'xlsx';
+import * as ExcelJS from 'exceljs';
 import path from 'path';
 import fs from 'fs';
 import { supabase } from '../lib/supabase';
@@ -166,93 +167,141 @@ export const uploadInventario = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    if (!req.file) {
-      res.status(400).json({
-        success: false,
-        message: 'No se recibió ningún archivo. Envía el campo "file" con un Excel.',
-      });
+    if (!req.file || !req.file.path) {
+      res.status(400).json({ success: false, message: 'No se recibió ningún archivo.' });
       return;
     }
 
-    console.log(`[INFO] Parseando Excel desde disco: ${req.file.originalname} (${(req.file.size / 1024 / 1024).toFixed(1)} MB)`);
-    
-    // Leer el workbook para saber cuántas hojas tiene
-    const workbook = XLSX.readFile(req.file.path, { cellDates: true, cellNF: false, cellText: false });
-    const maxSheets = Math.min(2, workbook.SheetNames.length);
+    console.log(`[INFO] Parseando Excel con ExcelJS stream: ${req.file.originalname}`);
     const results: ParseResult[] = [];
     
-    for (let sheetIndex = 0; sheetIndex < maxSheets; sheetIndex++) {
-      console.log(`[INFO] Procesando hoja índice ${sheetIndex}: ${workbook.SheetNames[sheetIndex]}`);
+    // @ts-ignore
+    const workbookReader = new ExcelJS.stream.xlsx.WorkbookReader(req.file.path, {
+      sharedStrings: 'cache',
+      hyperlinks: 'ignore',
+      worksheets: 'emit'
+    });
+
+    let sheetIndex = 0;
+    for await (const worksheetReader of workbookReader) {
+      if (sheetIndex >= 2) break; // Maximum 2 sheets processed
+      
+      console.log(`[INFO] Procesando hoja índice ${sheetIndex}`);
+      
+      let rowIndex = 0;
+      let headerRowIndex = -1;
+      let cabeceras: string[] = [];
+      let batch: any[] = [];
+      let totalRegistros = 0;
+      
+      const id = `inv_${Date.now()}_${sheetIndex}`;
+      const fechaImportacion = new Date().toISOString();
+      const hojaNombre = `Hoja ${sheetIndex + 1}`; // WorkbookReader no da el nombre fácilmente antes de leer
+
       try {
-        const parsed = parseInventarioExcel(req.file.path, sheetIndex, req.file.originalname);
-        
-        const id = `inv_${Date.now()}_${sheetIndex}`;
-        const fechaImportacion = new Date().toISOString();
+        for await (const row of worksheetReader) {
+          rowIndex++;
+          
+          // row.values puede ser sparse (y suele ser 1-indexed en ExcelJS)
+          const rawValues = Array.isArray(row.values) ? row.values.slice(1) : [];
+          if (rawValues.length === 0) continue;
 
-        // ── 1. Insertar metadatos del inventario ──────────────────────────────────
-        const { error: metaError } = await supabase
-          .from('inventarios')
-          .insert({
-            id,
-            archivo: parsed.archivo,
-            hoja: parsed.hoja,
-            fecha_importacion: fechaImportacion,
-            cabeceras: parsed.cabeceras,
-            total_registros: parsed.registros.length,
-          });
+          // Buscar la fila de encabezados dinámicamente
+          if (headerRowIndex === -1) {
+            const rowStr = rawValues.join('').toLowerCase();
+            if (rowStr.includes('cucop') || rowStr.includes('clave') || rowStr.includes('artículo') || rowStr.includes('articulo')) {
+              headerRowIndex = rowIndex;
+              cabeceras = rawValues.map((cell: any, idx: number) => {
+                let val = cell !== null && cell !== undefined ? String(cell).trim() : '';
+                return val !== '' ? val : `Columna_${idx + 1}`;
+              });
+              
+              // Insertar los metadatos ahora que tenemos las cabeceras
+              const { error: metaError } = await supabase.from('inventarios').insert({
+                id,
+                archivo: req.file.originalname,
+                hoja: hojaNombre,
+                fecha_importacion: fechaImportacion,
+                cabeceras: cabeceras,
+                total_registros: 0 // Se actualizará al final
+              });
+              if (metaError) throw new Error(`Error guardando metadatos: ${metaError.message}`);
+            }
+            continue;
+          }
 
-        if (metaError) {
-          throw new Error(`Error guardando metadatos de hoja ${parsed.hoja}: ${metaError.message}`);
-        }
+          // Procesar las filas de datos una vez encontrados los encabezados
+          if (headerRowIndex !== -1 && rowIndex > headerRowIndex) {
+            const hasData = rawValues.some((cell: any) => cell !== null && cell !== undefined && String(cell).trim() !== '');
+            if (!hasData) continue;
 
-        // ── 2. Insertar registros en batches ──────────────────────────────────────
-        console.log(`[INFO] Insertando ${parsed.registros.length} registros en batches de ${BATCH_SIZE}...`);
+            const datos: Record<string, CellValue> = {};
+            cabeceras.forEach((key, keyIdx) => {
+              let val: any = rawValues[keyIdx];
+              // Manejo de fórmulas o rich text de ExcelJS
+              if (val && typeof val === 'object' && !(val instanceof Date)) {
+                if (val.result !== undefined) val = val.result;
+                else if (val.text !== undefined) val = val.text;
+              }
+              // Normalizar fechas para JSON
+              if (val instanceof Date) {
+                  val = val.toISOString();
+              }
+              datos[key] = val !== undefined ? (val as CellValue) : null;
+            });
 
-        for (let i = 0; i < parsed.registros.length; i += BATCH_SIZE) {
-          const chunk = parsed.registros.slice(i, i + BATCH_SIZE);
+            batch.push({
+              inventario_id: id,
+              fila_num: rowIndex - headerRowIndex,
+              seccion: null,
+              categoria: null,
+              datos
+            });
+            totalRegistros++;
 
-          const rows = chunk.map((rec, chunkIdx) => ({
-            inventario_id: id,
-            fila_num: i + chunkIdx + 1,  // 1-indexed, orden original
-            seccion: rec.seccion !== null && rec.seccion !== undefined ? String(rec.seccion) : null,
-            categoria: rec.categoria !== null && rec.categoria !== undefined ? String(rec.categoria) : null,
-            datos: rec.datos,
-          }));
-
-          const { error: insertError } = await supabase
-            .from('inventario_registros')
-            .insert(rows);
-
-          if (insertError) {
-            await supabase.from('inventarios').delete().eq('id', id);
-            throw new Error(`Error insertando registros (batch ${i}–${i + BATCH_SIZE}): ${insertError.message}`);
+            if (batch.length >= BATCH_SIZE) {
+              const { error: insertError } = await supabase.from('inventario_registros').insert(batch);
+              if (insertError) throw new Error(`Error insertando batch: ${insertError.message}`);
+              batch = [];
+            }
           }
         }
 
-        console.log(`[INFO] Inventario ${id} (${parsed.hoja}) guardado correctamente en Supabase.`);
-
-        results.push({
-          id,
-          archivo: parsed.archivo,
-          hoja: parsed.hoja,
-          fechaImportacion,
-          cabeceras: parsed.cabeceras,
-          totalRegistros: parsed.registros.length,
-        });
+        // Insertar el último batch si quedó algo
+        if (batch.length > 0) {
+          const { error: insertError } = await supabase.from('inventario_registros').insert(batch);
+          if (insertError) throw new Error(`Error insertando último batch: ${insertError.message}`);
+        }
+        
+        // Actualizar el número total de registros
+        if (headerRowIndex !== -1) {
+          await supabase.from('inventarios').update({ total_registros: totalRegistros }).eq('id', id);
+          results.push({
+            id,
+            archivo: req.file.originalname,
+            hoja: hojaNombre,
+            fechaImportacion,
+            cabeceras,
+            totalRegistros
+          });
+          console.log(`[INFO] Inventario ${id} (${hojaNombre}) guardado correctamente en Supabase. Registros: ${totalRegistros}`);
+        } else {
+           console.log(`[WARN] No se encontraron cabeceras válidas en la hoja ${sheetIndex}`);
+        }
       } catch (err) {
-        console.error(`[ERROR] No se pudo procesar la hoja ${sheetIndex}:`, err);
-        // Continuar con la siguiente hoja si una falla
+         console.error(`[ERROR] Falló el procesamiento de la hoja ${sheetIndex}:`, err);
       }
+      sheetIndex++;
     }
 
     if (results.length === 0) {
-      throw new Error("No se pudo procesar ninguna hoja del archivo.");
+      throw new Error("No se pudo procesar ninguna hoja del archivo. Asegúrese de que el formato sea correcto.");
     }
 
     res.status(200).json({
       success: true,
       message: `Archivo procesado correctamente. ${results.length} hoja(s) importada(s).`,
-      data: results, // Ahora retorna un arreglo
+      data: results,
     });
   } catch (error) {
     next(error);
