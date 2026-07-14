@@ -628,10 +628,10 @@ export const getInventarioStats = async (
     let equipo_principal = 0;
     let componentes = 0;
     let no_inventariables = 0;
-    let faltantes = 0;
+    let validacion_fisica = 0;  // Registros con "pendiente de validación física" en Observaciones de Registro
     
-    let registrados_grp = 0;
-    let regularizacion = 0;
+    let registrados_grp = 0;    // Registros cuya columna Estatus = "Registrado en el GRP" (o variantes)
+    let regularizacion = 0;     // Registros cuya columna Estatus = "En Proceso de Regularización" (o variantes)
     
     for (const r of allRows) {
       const datos = r.datos || {};
@@ -652,24 +652,60 @@ export const getInventarioStats = async (
       else if (tipo.toLowerCase() === 'componente') componentes += qty;
       else if (tipo.toLowerCase() === 'no inventariable') no_inventariables += qty;
       
-      // Estatus Patrimonial
-      // (Valor a buscar: "Faltante")
-      const estatusPatrimonial = String(datos['Estatus Patrimonial (Estatus)'] || datos['Estatus Patrimonial'] || '').trim();
-      if (estatusPatrimonial.toLowerCase() === 'faltante') faltantes += qty;
+      // Validación Física
+      // Cuenta registros cuya columna "Observaciones de Registro" contenga "pendiente validación física"
+      const obsRegistro = String(
+        datos['Observaciones de Registro'] ||
+        datos['OBSERVACIONES DE REGISTRO'] ||
+        datos['observaciones de registro'] ||
+        datos['Observaciones'] ||
+        datos['OBSERVACIONES'] ||
+        datos['observaciones'] ||
+        ''
+      ).trim().toLowerCase();
+      if (obsRegistro.includes('pendiente validación física') ||
+          obsRegistro.includes('pendiente validacion fisica') ||
+          obsRegistro.includes('pendiente de validación física') ||
+          obsRegistro.includes('pendiente de validacion fisica') ||
+          obsRegistro.includes('peniente')) {
+        validacion_fisica += qty;
+      }
       
-      // Estatus GRP
-      // (Valores esperados: "Registrados en el GRP", "En Proceso de Regularización")
-      const estatusGrp = String(datos['Estatus GRP'] || datos['ESTATUS GRP'] || '').trim();
-      if (estatusGrp.toLowerCase() === 'registrados en el grp') registrados_grp += qty;
+      // Estatus (columna principal para GRP y regularización)
+      // (Valores esperados: "Registrado en el GRP", "En Proceso de Regularización" y variantes)
+      const estatus = String(
+        datos['Estatus'] ||
+        datos['ESTATUS'] ||
+        datos['estatus'] ||
+        datos['Estatus GRP'] ||
+        datos['ESTATUS GRP'] ||
+        datos['Estatus del GRP'] ||
+        ''
+      ).trim().toLowerCase();
+
+      if (
+        estatus.includes('registrado en el grp') ||
+        estatus.includes('registrados en el grp') ||
+        estatus.includes('registrado en grp') ||
+        estatus.includes('registrados en grp')
+      ) {
+        registrados_grp += qty;
+      } else if (
+        estatus.includes('en proceso de regularización') ||
+        estatus.includes('en proceso de regularizacion') ||
+        estatus.includes('proceso de regularización') ||
+        estatus.includes('proceso de regularizacion')
+      ) {
+        regularizacion += qty;
+      }
     }
     
-    // El proceso de regularización es la resta de equipo principal menos los registrados en GRP
-    regularizacion = equipo_principal - registrados_grp;
-    // Evitar números negativos por si registrados_grp supera equipo_principal por errores en datos
-    if (regularizacion < 0) regularizacion = 0;
-    
+    // Los porcentajes se calculan restando Registrados GRP vs En Proceso de Regularización
+    // respecto al total general
+    const total_clasificados = registrados_grp + regularizacion;
     const avance_grp = total_bienes > 0 ? Math.round((registrados_grp / total_bienes) * 100) : 0;
-    const falta_grp = total_bienes > 0 ? 100 - avance_grp : 0;
+    // Faltante = porcentaje que corresponde a "En Proceso de Regularización"
+    const falta_grp = total_bienes > 0 ? Math.round((regularizacion / total_bienes) * 100) : 0;
 
     res.status(200).json({
       success: true,
@@ -678,7 +714,7 @@ export const getInventarioStats = async (
         equipoPrincipal: equipo_principal,
         componentes: componentes,
         noInventariables: no_inventariables,
-        activos: faltantes, // Representa a "Faltante" en la UI
+        activos: validacion_fisica,   // "Validación Física" en la UI
         registradosGrp: registrados_grp,
         enProceso: regularizacion,
         avanceGrpPct: avance_grp,
