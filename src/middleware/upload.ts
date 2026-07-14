@@ -2,12 +2,19 @@ import multer from 'multer';
 import path from 'path';
 import { Request } from 'express';
 
-// ─── Almacenamiento en memoria ────────────────────────────────────────────────
-// Usamos memoryStorage en lugar de diskStorage porque:
-// 1. Render tiene sistema de archivos efímero (los archivos se pierden en cada deploy)
-// 2. El archivo se procesa en el controlador y se descarta — no necesitamos persistirlo
-// 3. Reduce latencia al evitar I/O de disco
-const storage = multer.memoryStorage();
+import os from 'os';
+
+// ─── Almacenamiento temporal en disco ─────────────────────────────────────────
+// Usamos diskStorage para evitar sobrecargar la memoria RAM (OOM en Render)
+// al subir archivos Excel grandes. El archivo se guardará en /tmp y luego se procesará.
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, os.tmpdir());
+  },
+  filename: (req, file, cb) => {
+    cb(null, `${Date.now()}-${file.originalname}`);
+  }
+});
 
 // ─── Filtro: sólo archivos Excel ───────────────────────────────────────────────
 const fileFilter = (

@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import * as XLSX from 'xlsx';
 import path from 'path';
+import fs from 'fs';
 import { supabase } from '../lib/supabase';
 import { logAuditoria } from './bitacora.controller';
 
@@ -173,17 +174,17 @@ export const uploadInventario = async (
       return;
     }
 
-    console.log(`[INFO] Parseando Excel en memoria: ${req.file.originalname} (${(req.file.size / 1024 / 1024).toFixed(1)} MB)`);
+    console.log(`[INFO] Parseando Excel desde disco: ${req.file.originalname} (${(req.file.size / 1024 / 1024).toFixed(1)} MB)`);
     
     // Leer el workbook para saber cuántas hojas tiene
-    const workbook = XLSX.read(req.file.buffer, { cellDates: true, cellNF: false, cellText: false });
+    const workbook = XLSX.readFile(req.file.path, { cellDates: true, cellNF: false, cellText: false });
     const maxSheets = Math.min(2, workbook.SheetNames.length);
     const results: ParseResult[] = [];
     
     for (let sheetIndex = 0; sheetIndex < maxSheets; sheetIndex++) {
       console.log(`[INFO] Procesando hoja índice ${sheetIndex}: ${workbook.SheetNames[sheetIndex]}`);
       try {
-        const parsed = parseInventarioExcel(req.file.buffer, sheetIndex, req.file.originalname);
+        const parsed = parseInventarioExcel(req.file.path, sheetIndex, req.file.originalname);
         
         const id = `inv_${Date.now()}_${sheetIndex}`;
         const fechaImportacion = new Date().toISOString();
@@ -255,6 +256,12 @@ export const uploadInventario = async (
     });
   } catch (error) {
     next(error);
+  } finally {
+    if (req.file && req.file.path) {
+      fs.unlink(req.file.path, (err) => {
+        if (err) console.error('Error al eliminar archivo temporal:', err);
+      });
+    }
   }
 };
 
