@@ -33,16 +33,7 @@ export const requireAuth = (req: Request, res: Response, next: NextFunction): vo
     const token = authHeader.split(' ')[1];
     const decoded: any = jwt.verify(token, JWT_SECRET);
     
-    // Obtener el nombre leyendo el JSON (o se podría añadir al token en login)
-    let nombre = 'Usuario Desconocido';
-    try {
-      const data = fs.readFileSync(USERS_FILE, 'utf8');
-      const users = JSON.parse(data);
-      const user = users.find((u: any) => u.id === decoded.id);
-      if (user) nombre = user.nombre;
-    } catch (e) {
-      console.error("Error leyendo users.json en middleware:", e);
-    }
+    let nombre = decoded.nombre || 'Usuario';
 
     req.user = {
       id: decoded.id,
