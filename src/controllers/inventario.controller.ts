@@ -583,7 +583,7 @@ export const getInventarioRows = async (
 /**
  * GET /api/inventarios/:id/column-values?col=NombreColumna&limit=200
  * Devuelve los valores únicos (no vacíos) de una columna del inventario.
- * Usado para poblar los dropdowns del modal de filtros avanzados.
+ * Optimizado: usa la caché en memoria para evitar timeouts en Supabase.
  */
 export const getColumnValues = async (
   req: Request,
@@ -593,75 +593,71 @@ export const getColumnValues = async (
   try {
     const { id } = req.params;
     const col = req.query.col as string;
+    const maxValues = Math.min(1000, parseInt(req.query.limit as string, 10) || 300);
 
     if (!col) {
       res.status(400).json({ success: false, message: 'El parámetro "col" es obligatorio.' });
       return;
     }
 
-    // Obtener total exacto
-    const { count } = await supabase
-      .from('inventario_registros')
-      .select('*', { count: 'exact', head: true })
-      .eq('inventario_id', id);
+    // ── Estrategia 1: usar la caché en memoria (rápida, sin timeout) ──────────
+    let allRows: any[];
+    try {
+      allRows = await getInventarioRowsFromCache(id);
+    } catch (err) {
+      // Si la caché falla, intentar con query directa pero con límite estricto
+      console.warn('[WARN] Cache miss para column-values, usando query directa limitada:', col);
+      const { data, error } = await supabase
+        .from('inventario_registros')
+        .select('datos')
+        .eq('inventario_id', id)
+        .not(`datos->>${col}`, 'is', null)
+        .neq(`datos->>${col}`, '')
+        .limit(5000); // Límite seguro
 
-    const total = count || 0;
-    const chunkSize = 1000;
-    const valuesSet = new Set<string>();
+      if (error) {
+        console.error('Supabase Error:', error);
+        res.status(200).json({ success: true, data: [] });
+        return;
+      }
 
-    // Paginar buscando solo la columna requerida
-    const promises = [];
-    for (let offset = 0; offset < total; offset += chunkSize) {
-      promises.push(
-        supabase
-          .from('inventario_registros')
-          .select('datos')
-          .eq('inventario_id', id)
-          .not(`datos->>${col}`, 'is', null)
-          .neq(`datos->>${col}`, '')
-          .range(offset, offset + chunkSize - 1)
-      );
+      const valuesSet = new Set<string>();
+      for (const row of data ?? []) {
+        const val = (row.datos as any)?.[col];
+        if (val) {
+          const str = String(val).trim();
+          if (str) valuesSet.add(str);
+        }
+      }
+      const values = Array.from(valuesSet).sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
+      res.status(200).json({ success: true, data: values.slice(0, maxValues) });
+      return;
     }
 
-    // Lotes de 10 peticiones
-    const BATCH_SIZE = 10;
-    for (let i = 0; i < promises.length; i += BATCH_SIZE) {
-      const batch = promises.slice(i, i + BATCH_SIZE);
-      const results = await Promise.all(batch);
-      
-      for (const { data, error } of results) {
-        if (error || !data) {
-           console.error("Supabase Error:", error);
-           continue;
-        }
-        for (const row of data) {
-          const val = (row.datos as any)?.[col];
-          if (val) {
-            const str = String(val).trim();
-            const lower = str.toLowerCase();
-            
-            // Deduplicación case-insensitive
-            let exists = false;
-            for (const existing of valuesSet) {
-              if (existing.toLowerCase() === lower) {
-                exists = true;
-                break;
-              }
-            }
-            if (!exists && str !== '') {
-              valuesSet.add(str);
-            }
+    // ── Extraer valores únicos de la caché en memoria ─────────────────────────
+    const valuesMap = new Map<string, string>(); // lowercase -> original
+    for (const r of allRows) {
+      const val = (r.datos as any)?.[col];
+      if (val !== null && val !== undefined) {
+        const str = String(val).trim();
+        if (str !== '') {
+          const lower = str.toLowerCase();
+          if (!valuesMap.has(lower)) {
+            valuesMap.set(lower, str);
           }
         }
       }
+      if (valuesMap.size >= maxValues) break;
     }
 
-    const values = Array.from(valuesSet);
+    const values = Array.from(valuesMap.values());
     values.sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
 
     res.status(200).json({ success: true, data: values });
   } catch (error) {
-    next(error);
+    console.error('[ERROR] getColumnValues:', error);
+    // Devolver array vacío en vez de 500 para no romper la UI
+    res.status(200).json({ success: true, data: [] });
   }
 };
 
